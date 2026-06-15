@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "discord-reminder-bot",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-06-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "discord-reminder-bot-db",
+      "database_id": "d90d0880-4a18-4ff1-b3cc-efb5a2e7bcc1"
+    }
+  ]
+}
