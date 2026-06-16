@@ -112,7 +112,7 @@ function deferReminderCreation(interaction, env, ctx) {
     parsed
   }));
 
-  return deferredMessage();
+  return message("Adding reminder...");
 }
 
 async function createReminder(interaction, env, reminderInput) {
@@ -311,12 +311,6 @@ function message(content) {
   return json({
     type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
     data: { content }
-  });
-}
-
-function deferredMessage() {
-  return json({
-    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
   });
 }
 
