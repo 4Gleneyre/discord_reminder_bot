@@ -6,7 +6,7 @@ import { timezoneLabel } from "../src/timezones.js";
 const DISCORD_API = "https://discord.com/api/v10";
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -14,7 +14,7 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/interactions") {
-      return safeHandleInteraction(request, env);
+      return safeHandleInteraction(request, env, ctx);
     }
 
     if (request.method === "POST" && url.pathname === "/tick") {
@@ -29,9 +29,9 @@ export default {
   }
 };
 
-async function safeHandleInteraction(request, env) {
+async function safeHandleInteraction(request, env, ctx) {
   try {
-    const response = await handleInteraction(request, env);
+    const response = await handleInteraction(request, env, ctx);
     console.log("Interaction response ready", {
       status: response.status,
       contentType: response.headers.get("Content-Type")
@@ -43,7 +43,7 @@ async function safeHandleInteraction(request, env) {
   }
 }
 
-async function handleInteraction(request, env) {
+async function handleInteraction(request, env, ctx) {
   const rawBody = await request.text();
   const signature = request.headers.get("X-Signature-Ed25519");
   const timestamp = request.headers.get("X-Signature-Timestamp");
@@ -77,7 +77,7 @@ async function handleInteraction(request, env) {
   }
 
   if (interaction.data.name === "remind") {
-    return createReminder(interaction, env);
+    return deferReminderCreation(interaction, env, ctx);
   }
 
   if (interaction.data.name === "reminders") {
@@ -91,7 +91,7 @@ async function handleInteraction(request, env) {
   return ephemeral("Unknown command.");
 }
 
-async function createReminder(interaction, env) {
+function deferReminderCreation(interaction, env, ctx) {
   console.log("Handling remind command");
   const options = optionMap(interaction.data.options ?? []);
   const text = stringOption(options, "text").trim();
@@ -105,37 +105,55 @@ async function createReminder(interaction, env) {
     return ephemeral(parsed.message);
   }
 
+  ctx.waitUntil(createReminder(interaction, env, {
+    text,
+    timezone,
+    mentionUserId,
+    parsed
+  }));
+
+  return deferredMessage();
+}
+
+async function createReminder(interaction, env, reminderInput) {
+  const { text, timezone, mentionUserId, parsed } = reminderInput;
   const id = crypto.randomUUID().slice(0, 8);
   const userId = interaction.member?.user?.id ?? interaction.user?.id;
   const targetUserId = mentionUserId ?? userId;
   const remindAt = parsed.reminderAt.toUTC().toISO();
 
-  await withRetry(() => env.DB.prepare(
-    `INSERT INTO reminders (
-      id, guild_id, channel_id, user_id, target_user_id, text, timezone,
-      local_date_time, remind_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(
-      id,
-      interaction.guild_id ?? null,
-      interaction.channel_id,
-      userId,
-      targetUserId,
-      text,
-      timezone,
-      parsed.reminderAt.toFormat("yyyy-MM-dd HH:mm ZZZZ"),
-      remindAt,
-      new Date().toISOString()
+  try {
+    await withRetry(() => env.DB.prepare(
+      `INSERT INTO reminders (
+        id, guild_id, channel_id, user_id, target_user_id, text, timezone,
+        local_date_time, remind_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run());
+      .bind(
+        id,
+        interaction.guild_id ?? null,
+        interaction.channel_id,
+        userId,
+        targetUserId,
+        text,
+        timezone,
+        parsed.reminderAt.toFormat("yyyy-MM-dd HH:mm ZZZZ"),
+        remindAt,
+        new Date().toISOString()
+      )
+      .run());
 
-  return message(
-    `Reminder set: ${text}\nMention: <@${targetUserId}>\nTime: ${formatReminderTime({
-      remindAt,
-      timezone
-    })}\nID: \`${id}\``
-  );
+    await editOriginalInteractionResponse(
+      interaction,
+      `Reminder set: ${text}\nMention: <@${targetUserId}>\nTime: ${formatReminderTime({
+        remindAt,
+        timezone
+      })}\nID: \`${id}\``
+    );
+  } catch (error) {
+    console.error("Failed to create reminder after deferring response", error?.stack ?? error);
+    await editOriginalInteractionResponse(interaction, "Something went wrong while setting that reminder.");
+  }
 }
 
 async function listReminders(interaction, env) {
@@ -296,6 +314,12 @@ function message(content) {
   });
 }
 
+function deferredMessage() {
+  return json({
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+  });
+}
+
 function ephemeral(content) {
   return json({
     type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
@@ -304,6 +328,22 @@ function ephemeral(content) {
       flags: InteractionResponseFlags.EPHEMERAL
     }
   });
+}
+
+async function editOriginalInteractionResponse(interaction, content) {
+  const response = await fetch(
+    `${DISCORD_API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content })
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to edit interaction response: ${response.status} ${errorText}`);
+  }
 }
 
 function json(body, status = 200) {

@@ -1,10 +1,12 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 
 export class ReminderStore {
   constructor(filePath) {
     this.filePath = filePath;
     this.reminders = [];
+    this.saveQueue = Promise.resolve();
   }
 
   async load() {
@@ -23,8 +25,14 @@ export class ReminderStore {
   }
 
   async save() {
+    const saveOperation = this.saveQueue.then(() => this.writeSnapshot());
+    this.saveQueue = saveOperation.catch(() => {});
+    return saveOperation;
+  }
+
+  async writeSnapshot() {
     await mkdir(dirname(this.filePath), { recursive: true });
-    const tempPath = `${this.filePath}.tmp`;
+    const tempPath = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(
       tempPath,
       `${JSON.stringify({ reminders: this.reminders }, null, 2)}\n`,
